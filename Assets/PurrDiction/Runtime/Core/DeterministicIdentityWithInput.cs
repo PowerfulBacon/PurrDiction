@@ -10,6 +10,31 @@ namespace PurrNet.Prediction
         where STATE : struct, IPredictedData<STATE>
         where INPUT : struct, IPredictedData
     {
+        readonly struct DeltaKey<T, S> : IStableHashable
+        {
+            private readonly PredictedComponentID id;
+            private readonly SceneID scene;
+
+            public DeltaKey(SceneID scene, PredictedComponentID id)
+            {
+                this.id = id;
+                this.scene = scene;
+            }
+
+            public uint GetStableHash()
+            {
+                const uint Off = 2166136261u;
+                const uint Pri = 16777619u;
+                uint h = Off;
+                h = (h ^ Hasher<T>.stableHash) * Pri;
+                h = (h ^ Hasher<S>.stableHash) * Pri;
+                h = (h ^ id.componentId.value) * Pri;
+                h = (h ^ id.objectId.instanceId.value) * Pri;
+                h = (h ^ scene.id.value) * Pri;
+                return h;
+            }
+        }
+
         [Header("Predicted Input")]
         [SerializeField] protected float _repeatInputFactor = 0.8f;
         [SerializeField] protected bool _extrapolateInput = true;
@@ -35,7 +60,7 @@ namespace PurrNet.Prediction
 
         protected virtual void UpdateInput(ref INPUT input) { }
 
-        private INPUT _lastInput;
+        private INPUT? _lastInput;
         private INPUT _nextInput;
 
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
@@ -100,8 +125,9 @@ namespace PurrNet.Prediction
             {
                 GetFinalInput(ref _nextInput);
                 SanitizeInput(ref _nextInput);
+                _lastInput?.Dispose();
                 _lastInput = _nextInput;
-                _inputHistory.Write(tick, _nextInput);
+                _inputHistory.Write(tick, Packer.Copy(_nextInput));
                 _nextInput = GetDefaultInput();
             }
             else if (isServer)
@@ -109,15 +135,20 @@ namespace PurrNet.Prediction
                 if (_queuedInput == null)
                 {
                     if (!extrapolate)
+                    {
+                        _lastInput?.Dispose();
                         _lastInput = GetDefaultInput();
-                    _inputHistory.Write(tick, _lastInput);
+                    }
+
+                    _inputHistory.Write(tick, Packer.Copy(_lastInput.GetValueOrDefault()));
                     return;
                 }
 
                 var input = _queuedInput.Value;
                 SanitizeInput(ref input);
+                _lastInput?.Dispose();
                 _lastInput = input;
-                _inputHistory.Write(tick, input);
+                _inputHistory.Write(tick, Packer.Copy(input));
                 _queuedInput = null;
             }
         }
@@ -142,23 +173,6 @@ namespace PurrNet.Prediction
         {
             throw new System.NotImplementedException();
         }
-
-        readonly struct DeltaKey : IStableHashable
-        {
-            private readonly PredictedComponentID id;
-
-            public DeltaKey(PredictedComponentID id)
-            {
-                this.id = id;
-            }
-
-            public uint GetStableHash()
-            {
-                return (uint)id.GetHashCode() ^ Hasher<INPUT>.stableHash;
-            }
-        }
-
-        DeltaKey key => new DeltaKey(id);
 
         public override void WriteFirstInput(ulong localTick, BitPacker packer)
         {
@@ -187,6 +201,8 @@ namespace PurrNet.Prediction
 
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
         }
+
+        DeltaKey<INPUT, STATE> key => new DeltaKey<INPUT, STATE>(sceneId, id);
 
         internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable)
         {

@@ -64,7 +64,7 @@ namespace PurrNet.Prediction
 
         public override void ResetInterpolation()
         {
-            _interpolatedState?.Teleport(fullPredictedState);
+            _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
         }
 
         public override void ResetState()
@@ -117,19 +117,20 @@ namespace PurrNet.Prediction
             fullPredictedState.state = GetInitialState();
             GetLatestUnityState();
 
-            var copy = fullPredictedState.DeepCopy();
-
             // if TickRate is 30, then this should be 2
             var interpolationBuffer = (int)Mathf.Max(world.tickRate / (float)10, 2);
 
             if (_interpolatedState == null)
-                _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(FULLInterpolate, 1f / world.tickRate, copy, interpolationBuffer);
-            else _interpolatedState.Teleport(copy);
+            {
+                _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
+                    FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
+            }
+            else _interpolatedState.Teleport(fullPredictedState.DeepCopy());
 
             if (_stateHistory == null)
                 _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
             else _stateHistory.Clear();
-            _stateHistory.Write(0, copy);
+            _stateHistory.Write(0, fullPredictedState.DeepCopy());
         }
 
         /// <summary>
@@ -234,7 +235,15 @@ namespace PurrNet.Prediction
 
         public STATE viewState;
 
-        public STATE? verifiedState => _stateHistory.Count > 0 ? _stateHistory[^1].state : null;
+        public STATE? verifiedState
+        {
+            get
+            {
+                if (lastVerifiedTick.HasValue && _stateHistory.TryGet(lastVerifiedTick.Value, out var state))
+                    return state.state;
+                return null;
+            }
+        }
 
         internal override void UpdateView(float deltaTime)
         {
@@ -250,7 +259,7 @@ namespace PurrNet.Prediction
             }
 
             viewState = _interpolatedState.Advance(deltaTime).state;
-            UpdateView(viewState, _stateHistory.Count > 0 ? _stateHistory[^1].state : null);
+            UpdateView(viewState, verifiedState);
         }
 
         protected virtual void UpdateView(STATE viewState, STATE? verified) {}
